@@ -1,0 +1,90 @@
+name: Build libltw_angle.so Complete
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    container: docker.io/library/ubuntu:22.04
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+      with:
+        submodules: false
+
+    - name: Install dependencies
+      run: |
+        apt-get update
+        apt-get install -y git python3 ninja-build cmake android-ndk
+
+    - name: Clone ANGLE with submodules
+      run: |
+        git clone --recurse-submodules https://github.com/douglacifrancisco-pixel/Angle
+        cd Angle
+        git submodule update --init --recursive
+        cd ..
+
+    - name: Clone LTW with submodules
+      run: |
+        git clone --recurse-submodules https://github.com/douglacifrancisco-pixel/LTW-to-angle-vulkan- ltw_complete
+
+    - name: Apply patches to ANGLE
+      run: |
+        cd Angle
+        for patch in ../patches/*.patch; do
+          git apply "$patch" || git apply -3 "$patch" || exit 1
+        done
+        cd ..
+
+    - name: Build ANGLE static
+      run: |
+        cd Angle
+        cat > args_nexus_android.gn << 'GNEOF'
+        import("//args_android_armv80.gn")
+        angle_static_linking = true
+        angle_use_static_angle = true
+        angle_export_egl_symbols = true
+        angle_export_gles_symbols = true
+        angle_expose_non_conformant_extensions_and_versions = true
+        angle_build_tests = false
+        GNEOF
+        mkdir -p out/Static
+        gn gen out/Static --args="import(\"//args_nexus_android.gn\")"
+        ninja -C out/Static libEGL.a libGLESv2.a libANGLE.a
+        cd ..
+
+    - name: Build LTW + ANGLE unified
+      run: |
+        mkdir -p ltw_build/src/main/tinywrapper
+        cp -r ltw_complete/ltw/src/main/tinywrapper/* ltw_build/src/main/tinywrapper/
+        mkdir -p build_final
+        cd build_final
+        cat > CMakeLists.txt << 'CMAKEEOF'
+        cmake_minimum_required(VERSION 3.10.0)
+        project(ltw_angle_unified VERSION 1.0.0 LANGUAGES C CXX)
+        set(CMAKE_SYSTEM_NAME Android)
+        set(CMAKE_SYSTEM_VERSION 26)
+        set(CMAKE_ANDROID_ARCH_ABI arm64-v8a)
+        set(CMAKE_ANDROID_NDK /opt/android-ndk)
+        set(CMAKE_ANDROID_STL_TYPE c++_static)
+        set(ANGLE_STATIC_DIR ${CMAKE_SOURCE_DIR}/../../Angle/out/Static)
+        set(LTW_SOURCE_DIR ${CMAKE_SOURCE_DIR}/../../ltw_build/src/main/tinywrapper)
+        file(GLOB LTW_SOURCES "${LTW_SOURCE_DIR}/*.c" "${LTW_SOURCE_DIR}/unordered_map/*.c")
+        add_library(ltw_angle SHARED ${LTW_SOURCES})
+        target_link_libraries(ltw_angle ${ANGLE_STATIC_DIR}/libEGL.a ${ANGLE_STATIC_DIR}/libGLESv2.a ${ANGLE_STATIC_DIR}/libANGLE.a)
+        target_include_directories(ltw_angle PRIVATE ${LTW_SOURCE_DIR} ${CMAKE_SOURCE_DIR}/../../Angle/include ${CMAKE_SOURCE_DIR}/../../Angle/src)
+        target_link_options(ltw_angle PUBLIC -Wl,--version-script=${LTW_SOURCE_DIR}/version.script -ffunction-sections -fdata-sections -flto -Wl,--gc-sections)
+        target_compile_definitions(ltw_angle PRIVATE ANGLE_LTW_COMPATIBILITY=1 ANGLE_EXPORT_EGL_SYMBOLS=1 ANGLE_EXPORT_GLES_SYMBOLS=1)
+        CMAKEEOF
+        cmake . -DCMAKE_TOOLCHAIN_FILE=/opt/android-ndk/build/cmake/android.toolchain.cmake
+        cmake --build . --target ltw_angle
+
+    - name: Upload artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: libltw_angle.so
+        path: build_final/libltw_angle.so
