@@ -5,81 +5,134 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 ANGLE="$ROOT/Angle"
 LTW="$ROOT/ltw"
 OUT="$ROOT/output"
+
 ANGLE_REPO="https://github.com/douglacifrancisco-pixel/Angle.git"
 LTW_REPO="https://github.com/douglacifrancisco-pixel/LTW-to-angle-vulkan-.git"
 LTW_BRANCH="feature/angle-vulkan-integration"
 
-echo "== Nexusapicore =="
+echo "============================================================"
+echo " Nexusapicore"
+echo "============================================================"
 echo "ROOT:  $ROOT"
 echo "ANGLE: $ANGLE"
 echo "LTW:   $LTW"
+echo
 
 rm -rf "$OUT"
 mkdir -p "$OUT"
 
 # ------------------------------------------------------------
-# 1. ANGLE: NÃO usar --recursive.
-# Evita o submodule privado chrome-internal.googlesource.com
-# que fez o build anterior falhar.
+# 1. depot_tools
 # ------------------------------------------------------------
-if [ ! -d "$ANGLE/.git" ]; then
-    echo "== Clonando ANGLE sem submodules =="
-    git clone --depth 1 --filter=blob:none --no-tags \
-        "$ANGLE_REPO" "$ANGLE"
-else
-    echo "== ANGLE já existe; reutilizando =="
+
+if ! command -v gclient >/dev/null 2>&1; then
+    echo "ERRO: gclient não encontrado."
+    echo "depot_tools precisa estar no PATH."
+    exit 1
 fi
 
-cd "$ANGLE"
-
-# ------------------------------------------------------------
-# 2. Inicializar somente submodules públicos necessários.
-# Não usar git submodule update --init --recursive.
-# ------------------------------------------------------------
-echo "== Verificando submodules ANGLE =="
-
-git submodule sync --recursive || true
-
-# O build Android Vulkan não precisa do GLES1 conform privado.
-# Inicializamos apenas dependências públicas quando presentes.
-for submodule in \
-    third_party/Vulkan-Headers \
-    third_party/vulkan-loader \
-    third_party/angle_external_gn \
-    third_party/abseil-cpp \
-    third_party/googletest
-do
-    if git config -f .gitmodules --get-regexp "^submodule\..*\.path$" \
-        | grep -q "[[:space:]]$submodule$"; then
-
-        echo "Inicializando: $submodule"
-
-        git submodule update --init --depth 1 "$submodule" || {
-            echo "AVISO: não foi possível inicializar $submodule"
-            echo "Continuando; ANGLE pode não precisar dele."
-        }
-    fi
-done
-
-# ------------------------------------------------------------
-# 3. GN / depot_tools
-# ------------------------------------------------------------
 if ! command -v gn >/dev/null 2>&1; then
     echo "ERRO: gn não encontrado."
-    echo "O GitHub Actions deve instalar depot_tools antes deste script."
     exit 1
 fi
 
 if ! command -v autoninja >/dev/null 2>&1; then
     echo "ERRO: autoninja não encontrado."
-    echo "O GitHub Actions deve instalar depot_tools antes deste script."
     exit 1
 fi
 
 # ------------------------------------------------------------
-# 4. Configuração oficial ANGLE ARM64 estática + Vulkan
+# 2. ANGLE
+#
+# IMPORTANTE:
+# Não usar --recursive.
+# Não usar git submodule update --init --recursive.
+#
+# As dependências são controladas pelo DEPS/gclient.
+# checkout_angle_internal permanece FALSE, portanto:
+# third_party/gles1_conform NÃO será baixado.
 # ------------------------------------------------------------
-echo "== Gerando configuração ANGLE Static ARM64 Vulkan =="
+
+if [ ! -d "$ANGLE/.git" ]; then
+    echo "== Clonando ANGLE sem submodules =="
+
+    git clone \
+        --depth 1 \
+        --filter=blob:none \
+        --no-tags \
+        "$ANGLE_REPO" \
+        "$ANGLE"
+else
+    echo "== ANGLE já existe =="
+fi
+
+# ------------------------------------------------------------
+# 3. Configurar gclient
+# ------------------------------------------------------------
+
+echo "== Configurando gclient =="
+
+cat > "$ROOT/.gclient" <<GCLIENT
+solutions = [
+  {
+    "name": "Angle",
+    "url": "$ANGLE_REPO",
+    "managed": False,
+    "custom_deps": {},
+    "custom_vars": {
+      "checkout_angle_internal": False,
+      "checkout_angle_mesa": False,
+      "checkout_angle_partition_alloc": False,
+      "checkout_angle_cl_deps": False,
+      "checkout_angle_dawn_deps": False,
+      "checkout_angle_restricted_traces": False,
+      "checkout_extra_traces": False,
+    },
+  },
+]
+
+target_os = ["android"]
+GCLIENT
+
+cd "$ROOT"
+
+echo "== Sincronizando dependências públicas do ANGLE =="
+echo "== checkout_angle_internal = FALSE =="
+
+gclient sync \
+    --no-history \
+    --shallow
+
+# ------------------------------------------------------------
+# 4. Segurança adicional:
+# garantir que o submodule privado não seja registrado como
+# dependência ativa.
+# ------------------------------------------------------------
+
+cd "$ANGLE"
+
+if git config -f .gitmodules --get-regexp "^submodule\\..*\\.path$" \
+    | grep -q "third_party/gles1_conform$"; then
+
+    echo "== Confirmado: gles1_conform existe no .gitmodules =="
+    echo "== Mas checkout_angle_internal está FALSE =="
+    echo "== Não será baixado. =="
+fi
+
+if [ -d "third_party/gles1_conform/.git" ]; then
+    echo "ERRO: gles1_conform privado foi baixado."
+    echo "Abortando para não continuar com dependência interna."
+    exit 1
+fi
+
+# ------------------------------------------------------------
+# 5. Gerar configuração oficial
+# ------------------------------------------------------------
+
+echo
+echo "============================================================"
+echo " ANGLE: Static ARM64 Vulkan"
+echo "============================================================"
 
 rm -rf out/Static
 
@@ -88,9 +141,23 @@ import("//args/android_arm64_static.gn")
 '
 
 # ------------------------------------------------------------
-# 5. Build das bibliotecas estáticas ANGLE
+# 6. Mostrar configuração
 # ------------------------------------------------------------
-echo "== Compilando ANGLE =="
+
+echo
+echo "== GN args importantes =="
+
+gn args out/Static --list | grep -E \
+    "target_os|target_cpu|angle_static_linking|angle_use_static_angle|angle_enable_vulkan|angle_enable_gl|android_ndk_api_level"
+
+# ------------------------------------------------------------
+# 7. Compilar ANGLE
+# ------------------------------------------------------------
+
+echo
+echo "============================================================"
+echo " Compilando ANGLE"
+echo "============================================================"
 
 autoninja -C out/Static \
     libEGL \
@@ -98,55 +165,97 @@ autoninja -C out/Static \
     libANGLE
 
 # ------------------------------------------------------------
-# 6. Verificação
+# 8. Localizar bibliotecas
 # ------------------------------------------------------------
-echo "== Bibliotecas ANGLE geradas =="
 
-find out/Static -maxdepth 4 \
-    \( -name "libEGL.a" -o -name "libGLESv2.a" -o -name "libANGLE.a" \) \
+echo
+echo "============================================================"
+echo " Bibliotecas ANGLE"
+echo "============================================================"
+
+find out/Static \
+    -type f \
+    \( \
+        -name "libEGL.a" \
+        -o -name "libGLESv2.a" \
+        -o -name "libANGLE.a" \
+    \) \
     -print
 
-for f in \
-    out/Static/obj/libEGL/libEGL.a \
-    out/Static/obj/libGLESv2/libGLESv2.a \
-    out/Static/obj/libANGLE/libANGLE.a
-do
-    if [ ! -f "$f" ]; then
-        echo "ERRO: biblioteca não encontrada: $f"
-        exit 1
-    fi
-done
+ANGLE_EGL="$(find out/Static -type f -name 'libEGL.a' | head -n1)"
+ANGLE_GLES="$(find out/Static -type f -name 'libGLESv2.a' | head -n1)"
+ANGLE_CORE="$(find out/Static -type f -name 'libANGLE.a' | head -n1)"
+
+if [ -z "$ANGLE_EGL" ]; then
+    echo "ERRO: libEGL.a não encontrada."
+    exit 1
+fi
+
+if [ -z "$ANGLE_GLES" ]; then
+    echo "ERRO: libGLESv2.a não encontrada."
+    exit 1
+fi
+
+if [ -z "$ANGLE_CORE" ]; then
+    echo "ERRO: libANGLE.a não encontrada."
+    exit 1
+fi
+
+echo
+echo "libEGL.a    = $ANGLE_EGL"
+echo "libGLESv2.a = $ANGLE_GLES"
+echo "libANGLE.a  = $ANGLE_CORE"
 
 # ------------------------------------------------------------
-# 7. LTW
+# 9. Copiar libs para output temporariamente
 # ------------------------------------------------------------
+
+mkdir -p "$OUT/angle"
+
+cp "$ANGLE_EGL" "$OUT/angle/"
+cp "$ANGLE_GLES" "$OUT/angle/"
+cp "$ANGLE_CORE" "$OUT/angle/"
+
+# ------------------------------------------------------------
+# 10. LTW
+# ------------------------------------------------------------
+
 cd "$ROOT"
 
 if [ ! -d "$LTW/.git" ]; then
+    echo
     echo "== Clonando LTW =="
-    rm -rf "$LTW"
-    git clone --depth 1 --no-tags \
+
+    git clone \
+        --depth 1 \
+        --no-tags \
         --branch "$LTW_BRANCH" \
-        "$LTW_REPO" "$LTW"
+        "$LTW_REPO" \
+        "$LTW"
 else
-    echo "== LTW já existe; reutilizando =="
+    echo
+    echo "== LTW já existe =="
 fi
+
+# ------------------------------------------------------------
+# 11. Resultado
+# ------------------------------------------------------------
 
 echo
 echo "============================================================"
 echo " ANGLE STATIC BUILD OK"
 echo "============================================================"
 echo
-echo "Agora temos:"
-echo "  ANGLE Vulkan ARM64 estático"
-echo "  libEGL.a"
-echo "  libGLESv2.a"
-echo "  libANGLE.a"
+echo "Gerado:"
+echo "  $OUT/angle/libEGL.a"
+echo "  $OUT/angle/libGLESv2.a"
+echo "  $OUT/angle/libANGLE.a"
 echo
-echo "O próximo passo é o link final LTW + ANGLE."
+echo "LTW:"
+echo "  $LTW"
 echo
+echo "============================================================"
+echo " Próxima etapa: LINK FINAL LTW + ANGLE"
+echo "============================================================"
 
-# Não fingir que libegl_angle.so foi criado.
-# O link final será feito após determinar as dependências
-# estáticas exatas produzidas pelo build do ANGLE.
 exit 0
