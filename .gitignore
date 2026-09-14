@@ -1,0 +1,16 @@
+# Build
+build/
+Angle/
+*.a
+*.so
+*.o
+*.log
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# System
+.DS_Store
+Thumbs.db

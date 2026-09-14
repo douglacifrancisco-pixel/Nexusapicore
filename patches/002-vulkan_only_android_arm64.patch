@@ -1,0 +1,18 @@
+diff --git a/args_android_armv80.gn b/args_android_armv80.gn
+index 1234567..abcdefg 100644
+--- a/args_android_armv80.gn
++++ b/args_android_armv80.gn
+@@ -20,11 +20,11 @@
+ # ============================================================================
+ # Backend Configuration - Vulkan Only for Android
+ # ============================================================================
+-# Enable Vulkan backend (required for Android)
++# Enable Vulkan backend ONLY (required for Android)
+ angle_enable_vulkan = true
+
+ # Disable all other backends for Android ARMv8.0-A strict builds
+-angle_enable_gl = false
++angle_enable_gl = false
+ angle_enable_d3d11 = false
+ angle_enable_metal = false
+ angle_enable_swiftshader = false

@@ -1,0 +1,38 @@
+diff --git a/src/libANGLE/angle_ltw_compat.cpp b/src/libANGLE/angle_ltw_compat.cpp
+new file mode 100644
+index 0000000..1234567
+--- /dev/null
++++ b/src/libANGLE/angle_ltw_compat.cpp
+@@ -0,0 +1,20 @@
++#include <EGL/egl.h>
++#include "libANGLE/Display.h"
++
++extern "C" {
++
++void angle_initialize() {
++    angle::Display::Initialize();
++}
++
++void* angle_eglGetProcAddress(const char* procname) {
++    return angle::eglGetProcAddress(procname);
++}
++
++void angle_set_expose_es32(bool expose) {
++    // Habilitar ES3.2
++    angle::SetExposeES32ForTesting(expose);
++}
++
++}
+diff --git a/src/libANGLE/BUILD.gn b/src/libANGLE/BUILD.gn
+index 1234567..abcdefg 100644
+--- a/src/libANGLE/BUILD.gn
++++ b/src/libANGLE/BUILD.gn
+@@ -100,6 +100,10 @@ angle_source_set("libANGLE") {
+     if (angle_enable_cl) {
+       sources += libangle_cl_sources
+     }
++    if (angle_ltw_compatibility) {
++      sources += [ "angle_ltw_compat.cpp" ]
++    }
+ }
+

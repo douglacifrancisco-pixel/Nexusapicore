@@ -1,0 +1,30 @@
+diff --git a/gni/angle_static.gni b/gni/angle_static.gni
+index 1234567..abcdefg 100644
+--- a/gni/angle_static.gni
++++ b/gni/angle_static.gni
+@@ -5,7 +5,7 @@
+ declare_args() {
+   # Select the static ANGLE targets in the standalone build.
+-  angle_static_linking = false
++  angle_static_linking = true
+
+   # Static archives do not have a dynamic export table.  These switches are
+   # consumed by the static API config so public EGL/GLES declarations remain
+@@ -13,8 +13,8 @@ declare_args() {
+   # visible to the final embedder.
+   angle_export_egl_symbols = true
+   angle_export_gles_symbols = true
++  angle_ltw_compatibility = true
+
+   # Enables the compile-time contract used by downstream static embedders.
+-  angle_ltw_compatibility = false
++  angle_ltw_compatibility = true
+ }
+diff --git a/BUILD.gn b/BUILD.gn
+index 1234567..abcdefg 100644
+--- a/BUILD.gn
++++ b/BUILD.gn
+@@ -100,7 +100,7 @@ declare_args() {
+   # Enables non-conformant extensions and features
+-  angle_expose_non_conformant_extensions_and_versions = false
++  angle_expose_non_conformant_extensions_and_versions = true
