@@ -13,24 +13,200 @@ jobs:
     steps:
     - name: Checkout
       uses: actions/checkout@v4
-      with:
-        submodules: false
 
     - name: Install dependencies
       run: |
         apt-get update
-        apt-get install -y git python3 ninja-build cmake android-ndk
+        apt-get install -y git python3 ninja-build cmake
+        wget https://dl.google.com/android/repository/android-ndk-r26b-linux.zip
+        unzip -q android-ndk-r26b-linux.zip
+        export ANDROID_NDK=$(pwd)/android-ndk-r26b
 
-    - name: Build ANGLE with patches
+    - name: Clone ANGLE with submodules
       run: |
-        ./scripts/download_and_patch_angle.sh
+        git clone --recurse-submodules https://github.com/douglacifrancisco-pixel/Angle
+        cd Angle
+        git submodule update --init --recursive
+        cd ..
 
-    - name: Build LTW + ANGLE
+    - name: Clone LTW with submodules
       run: |
-        ./scripts/build_unified.sh
+        git clone --recurse-submodules https://github.com/douglacifrancisco-pixel/LTW-to-angle-vulkan- ltw_source
+        cd ltw_source
+        git submodule update --init --recursive
+        cd ..
+
+    - name: Apply patches to ANGLE
+      run: |
+        cd Angle
+        # Patch 1: Static linking
+        cat > /tmp/patch1.patch << 'PATCH1'
+        diff --git a/gni/angle_static.gni b/gni/angle_static.gni
+        index 1234567..abcdefg 100644
+        --- a/gni/angle_static.gni
+        +++ b/gni/angle_static.gni
+        @@ -5,7 +5,7 @@
+         declare_args() {
+           angle_static_linking = false
+        +  angle_static_linking = true
+           angle_export_egl_symbols = true
+           angle_export_gles_symbols = true
+        +  angle_ltw_compatibility = true
+        -  angle_ltw_compatibility = false
+         }
+        PATCH1
+        git apply /tmp/patch1.patch || true
+
+        # Patch 2: Vulkan only + expose ES32
+        cat > /tmp/patch2.patch << 'PATCH2'
+        diff --git a/args_android_armv80.gn b/args_android_armv80.gn
+        index 1234567..abcdefg 100644
+        --- a/args_android_armv80.gn
+        +++ b/args_android_armv80.gn
+        @@ -20,7 +20,7 @@
+         angle_enable_vulkan = true
+         angle_enable_gl = false
+        -angle_expose_non_conformant_extensions_and_versions = false
+        +angle_expose_non_conformant_extensions_and_versions = true
+        PATCH2
+        git apply /tmp/patch2.patch || true
+
+        # Adicionar arquivo de compatibilidade
+        cat > src/libANGLE/angle_ltw_compat.cpp << 'CPPEOF'
+        #include <EGL/egl.h>
+        #include "libANGLE/Display.h"
+        extern "C" {
+        void angle_initialize() { angle::Display::Initialize(); }
+        void* angle_eglGetProcAddress(const char* procname) { return angle::eglGetProcAddress(procname); }
+        void angle_set_expose_es32(bool expose) { angle::SetExposeES32ForTesting(expose); }
+        }
+        CPPEOF
+        sed -i '/libangle_sources += \[/a\    "src/libANGLE/angle_ltw_compat.cpp",' src/libANGLE/BUILD.gn
+        cd ..
+
+    - name: Modify LTW for static linking
+      run: |
+        cd ltw_source/ltw/src/main/tinywrapper
+        # Modificar proc.c
+        cat > proc.c << 'PROCEOF'
+        #include <EGL/egl.h>
+        #include <GLES3/gl31.h>
+        #include <dlfcn.h>
+        #include <stdlib.h>
+        #include <stdio.h>
+        #include <string.h>
+        #include "proc.h"
+        #include "egl.h"
+        #include "libraryinternal.h"
+        #define GL_GLEXT_PROTOTYPES
+        #include "GL/gl.h"
+        #include "GL/glext.h"
+        INTERNAL eglMustCastToProperFunctionPointerType (*host_eglGetProcAddress)(const char *procname);
+        INTERNAL es3_functions_t es3_functions;
+        static void error_sysegl() { printf("LTWInit: Failed to load ANGLE\n"); abort(); }
+        static void error_init(const char* functionName) { printf("LTWInit: Failed to load function %s\n", functionName); abort(); }
+        static void init_es3_proc() {
+        #define GLESFUNC(name, type) es3_functions.name = (type)host_eglGetProcAddress(#name); if(es3_functions.name == NULL) error_init(#name);
+        #include "es3_functions.h"
+        #undef GLESFUNC
+        #define GLESFUNC(name, type) es3_functions.name = (type)host_eglGetProcAddress(#name);
+        #include "es3_extended.h"
+        #undef GLESFUNC
+        }
+        __attribute__((constructor, used)) void proc_init(){
+            host_eglGetProcAddress = angle_eglGetProcAddress;
+            angle_initialize();
+            angle_set_expose_es32(true);
+            init_egl();
+            init_es3_proc();
+        }
+        __attribute__((used)) eglMustCastToProperFunctionPointerType glXGetProcAddress(const char *procname) { return eglGetProcAddress(procname); }
+        extern void* resolve_stub(const char* procname);
+        eglMustCastToProperFunctionPointerType eglGetProcAddress(const char *procname) {
+            if(!strncmp(procname, "egl", 3)) {
+                if(!strcmp("eglCreateContext", procname)) return (eglMustCastToProperFunctionPointerType) eglCreateContext;
+                if(!strcmp("eglDestroyContext", procname)) return (eglMustCastToProperFunctionPointerType) eglDestroyContext;
+                if(!strcmp("eglMakeCurrent", procname)) return (eglMustCastToProperFunctionPointerType) eglMakeCurrent;
+            }
+            if(strncmp(procname, "gl", 2) != 0) goto fallback;
+        #define GLESOVERRIDE(name) if(!strcmp(procname, #name)) { return (eglMustCastToProperFunctionPointerType) name; }
+        #include "es3_overrides.h"
+        #undef GLESOVERRIDE
+            eglMustCastToProperFunctionPointerType function;
+        fallback:
+            function = host_eglGetProcAddress(procname);
+            if(function == NULL) { function = resolve_stub(procname); }
+            return function;
+        }
+        PROCEOF
+
+        # Modificar egl.c
+        sed -i '/void find_esversion(context_t\* context) {/a\    context->es32 = true;\n    context->es31 = true;'
+        cd ../../../..
+
+    - name: Build ANGLE static
+      run: |
+        cd Angle
+        mkdir -p out/Static
+        gn gen out/Static --args="import(\"//args_android_armv80.gn\")" \
+            --args="angle_static_linking=true" \
+            --args="angle_use_static_angle=true" \
+            --args="angle_build_tests=false"
+        ninja -C out/Static libEGL.a libGLESv2.a libANGLE.a
+        cd ..
+
+    - name: Build LTW + ANGLE unified
+      run: |
+        mkdir -p build_output
+        cd build_output
+        cat > CMakeLists.txt << 'CMAKEEOF'
+        cmake_minimum_required(VERSION 3.10.0)
+        project(ltw_angle_unified VERSION 1.0.0 LANGUAGES C CXX)
+        set(CMAKE_SYSTEM_NAME Android)
+        set(CMAKE_SYSTEM_VERSION 26)
+        set(CMAKE_ANDROID_ARCH_ABI arm64-v8a)
+        set(CMAKE_ANDROID_NDK ${{env.ANDROID_NDK}})
+        set(CMAKE_ANDROID_STL_TYPE c++_static)
+        set(ANGLE_STATIC_DIR ${{github.workspace}}/Angle/out/Static)
+        set(LTW_SOURCE_DIR ${{github.workspace}}/ltw_source/ltw/src/main/tinywrapper)
+        file(GLOB LTW_SOURCES
+            "${LTW_SOURCE_DIR}/*.c"
+            "${LTW_SOURCE_DIR}/unordered_map/*.c"
+            "${LTW_SOURCE_DIR}/glsl_optimizer/src/*.cpp"
+            "${LTW_SOURCE_DIR}/glsl_optimizer/src/compiler/*.cpp"
+            "${LTW_SOURCE_DIR}/vgpu_shaderconv/*.c"
+        )
+        add_library(ltw_angle SHARED ${{LTW_SOURCES}})
+        target_link_libraries(ltw_angle
+            ${{ANGLE_STATIC_DIR}}/libEGL.a
+            ${{ANGLE_STATIC_DIR}}/libGLESv2.a
+            ${{ANGLE_STATIC_DIR}}/libANGLE.a
+        )
+        target_include_directories(ltw_angle PRIVATE
+            ${{LTW_SOURCE_DIR}}
+            ${{LTW_SOURCE_DIR}}/GL
+            ${{LTW_SOURCE_DIR}}/glsl_optimizer/include
+            ${{LTW_SOURCE_DIR}}/glsl_optimizer/include/GL
+            ${{LTW_SOURCE_DIR}}/glsl_optimizer/include/GLES2
+            ${{LTW_SOURCE_DIR}}/glsl_optimizer/include/GLES3
+            ${{github.workspace}}/Angle/include
+            ${{github.workspace}}/Angle/src
+        )
+        target_link_options(ltw_angle PUBLIC
+            -Wl,--version-script=${{LTW_SOURCE_DIR}}/version.script
+            -ffunction-sections -fdata-sections -flto -Wl,--gc-sections
+        )
+        target_compile_definitions(ltw_angle PRIVATE
+            ANGLE_LTW_COMPATIBILITY=1
+            ANGLE_EXPORT_EGL_SYMBOLS=1
+            ANGLE_EXPORT_GLES_SYMBOLS=1
+        )
+        CMAKEEOF
+        cmake . -DCMAKE_TOOLCHAIN_FILE=${{env.ANDROID_NDK}}/build/cmake/android.toolchain.cmake
+        cmake --build . --target ltw_angle
 
     - name: Upload artifact
       uses: actions/upload-artifact@v4
       with:
         name: libltw_angle.so
-        path: build/libltw_angle.so
+        path: build_output/libltw_angle.so

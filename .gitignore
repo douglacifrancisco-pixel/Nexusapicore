@@ -1,16 +1,14 @@
-# Build
-build/
+Build
+build_output/
 Angle/
+ltw_source/
 *.a
 *.so
 *.o
 *.log
-
-# IDE
+.DS_Store
+Thumbs.db
+IDE
 .idea/
 .vscode/
 *.swp
-
-# System
-.DS_Store
-Thumbs.db
