@@ -136,6 +136,16 @@ echo "============================================================"
 
 rm -rf out/Static
 
+# Corrigir conflito de android_ndk_api_level no ANGLE
+ANGLE_NDK_FILE="$ANGLE/args/android_armv80.gn"
+if [ -f "$ANGLE_NDK_FILE" ]; then
+    sed -i 's/android_ndk_api_level = 26/android_ndk_api_level = 29/' "$ANGLE_NDK_FILE"
+    echo "ANGLE: android_ndk_api_level corrigido 26 -> 29"
+else
+    echo "ERRO: não encontrei $ANGLE_NDK_FILE"
+    exit 1
+fi
+
 gn gen out/Static --args='
 import("//args/android_arm64_static.gn")
 '
